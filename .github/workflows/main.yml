@@ -9,7 +9,7 @@ on:
 
 jobs:
 
-  # ── 1. Verificar sintaxis ──────────────────────────────────────────────────
+  # ── 1. Verificar sintaxis ─────────────────────────────────────────────────
   lint:
     name: Verificar código Python
     runs-on: ubuntu-22.04
