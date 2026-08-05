@@ -1,0 +1,246 @@
+name: CI – MttoCantv
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+
+  # ── 1. Verificar sintaxis ──────────────────────────────────────────────────
+  lint:
+    name: Verificar código Python
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Verificar sintaxis
+        run: |
+          python3 -m py_compile mttocantv/app.py
+          echo "✅ Sintaxis OK"
+
+  # ── 2. Construir .deb para Linux Lite ─────────────────────────────────────
+  build-linux:
+    name: Construir .deb (Linux Lite)
+    runs-on: ubuntu-22.04
+    needs: lint
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Instalar herramientas
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y \
+            dpkg-dev \
+            python3-tk \
+            python3-pil \
+            python3-pil.imagetk \
+            python3-reportlab
+
+      - name: Construir paquete .deb
+        run: |
+          set -e
+          PKG="mttocantv_1.0.0_all"
+
+          mkdir -p ${PKG}/DEBIAN
+          mkdir -p ${PKG}/usr/bin
+          mkdir -p ${PKG}/usr/lib/python3/dist-packages/mttocantv
+          mkdir -p ${PKG}/usr/share/applications
+          mkdir -p ${PKG}/usr/share/icons/hicolor/scalable/apps
+          mkdir -p ${PKG}/usr/share/icons/hicolor/256x256/apps
+          mkdir -p ${PKG}/usr/share/mttocantv
+          mkdir -p ${PKG}/usr/share/doc/mttocantv
+
+          # Archivos Python
+          cp mttocantv/app.py       ${PKG}/usr/lib/python3/dist-packages/mttocantv/
+          cp mttocantv/__init__.py  ${PKG}/usr/lib/python3/dist-packages/mttocantv/
+
+          # Assets (banner e ícono si existen en el repo)
+          if [ -f assets/banner.png ]; then
+            cp assets/banner.png ${PKG}/usr/share/mttocantv/banner.png
+          fi
+          if [ -f assets/icon.png ]; then
+            cp assets/icon.png   ${PKG}/usr/share/mttocantv/icon.png
+            cp assets/icon.png   ${PKG}/usr/share/icons/hicolor/256x256/apps/mttocantv.png
+          fi
+
+          # Ejecutable
+          cat > ${PKG}/usr/bin/mttocantv <<'SCRIPT'
+          #!/usr/bin/env python3
+          # -*- coding: utf-8 -*-
+          import sys
+          sys.path.insert(0, '/usr/lib/python3/dist-packages')
+          from mttocantv.app import main
+          main()
+          SCRIPT
+          chmod +x ${PKG}/usr/bin/mttocantv
+
+          # Ícono SVG fallback
+          cat > ${PKG}/usr/share/icons/hicolor/scalable/apps/mttocantv.svg <<'SVG'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+            <rect width="64" height="64" rx="10" fill="#1A237E"/>
+            <text x="32" y="44" text-anchor="middle" font-size="34" fill="white">⚙</text>
+          </svg>
+          SVG
+
+          # Metadatos Debian
+          cp debian/control           ${PKG}/DEBIAN/control
+          cp debian/postinst          ${PKG}/DEBIAN/postinst
+          chmod 755                   ${PKG}/DEBIAN/postinst
+          cp debian/mttocantv.desktop ${PKG}/usr/share/applications/
+
+          echo "MttoCantv v1.0 – MIT" > ${PKG}/usr/share/doc/mttocantv/copyright
+
+          dpkg-deb --build --root-owner-group ${PKG}
+          echo "✅ .deb generado:"
+          ls -lh ${PKG}.deb
+
+      - name: Verificar .deb
+        run: dpkg-deb --info mttocantv_1.0.0_all.deb
+
+      - name: Subir artefacto Linux
+        uses: actions/upload-artifact@v4
+        with:
+          name: mttocantv-linux-deb
+          path: mttocantv_1.0.0_all.deb
+          retention-days: 60
+
+  # ── 3. Construir .exe portable para Windows ───────────────────────────────
+  build-windows:
+    name: Construir .exe portable (Windows 7+)
+    runs-on: windows-2019
+    needs: lint
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.8
+        # Python 3.8 es la última versión compatible con Windows 7
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.8"
+
+      - name: Instalar dependencias Python
+        run: |
+          python -m pip install --upgrade pip
+          pip install pyinstaller==6.3.0
+          pip install pillow
+          pip install reportlab
+
+      - name: Construir .exe con PyInstaller
+        run: |
+          pyinstaller `
+            --onefile `
+            --windowed `
+            --name MttoCantv `
+            --add-data "assets;assets" `
+            --hidden-import tkinter `
+            --hidden-import tkinter.ttk `
+            --hidden-import sqlite3 `
+            --hidden-import PIL `
+            --hidden-import reportlab `
+            mttocantv/app.py
+
+          echo "✅ .exe generado:"
+          dir dist\MttoCantv.exe
+
+      - name: Crear carpeta portable
+        run: |
+          mkdir MttoCantv_Portable
+          copy dist\MttoCantv.exe MttoCantv_Portable\MttoCantv.exe
+
+          # Copiar assets si existen
+          if exist assets\banner.png copy assets\banner.png MttoCantv_Portable\banner.png
+          if exist assets\icon.png   copy assets\icon.png   MttoCantv_Portable\icon.png
+
+          # README de uso
+          echo MttoCantv - Registro de Mantenimiento > MttoCantv_Portable\LEEME.txt
+          echo. >> MttoCantv_Portable\LEEME.txt
+          echo USO: >> MttoCantv_Portable\LEEME.txt
+          echo   1. Doble clic en MttoCantv.exe >> MttoCantv_Portable\LEEME.txt
+          echo   2. No requiere instalacion >> MttoCantv_Portable\LEEME.txt
+          echo. >> MttoCantv_Portable\LEEME.txt
+          echo IMAGENES: >> MttoCantv_Portable\LEEME.txt
+          echo   Coloca banner.png e icon.png en esta misma carpeta >> MttoCantv_Portable\LEEME.txt
+          echo. >> MttoCantv_Portable\LEEME.txt
+          echo BASE DE DATOS: >> MttoCantv_Portable\LEEME.txt
+          echo   Se guarda en: %APPDATA%\mttocantv\registros.db >> MttoCantv_Portable\LEEME.txt
+
+          dir MttoCantv_Portable
+
+      - name: Comprimir carpeta portable
+        run: |
+          Compress-Archive -Path MttoCantv_Portable -DestinationPath MttoCantv_Windows_Portable.zip
+          echo "✅ ZIP portable creado"
+
+      - name: Subir artefacto Windows
+        uses: actions/upload-artifact@v4
+        with:
+          name: mttocantv-windows-portable
+          path: MttoCantv_Windows_Portable.zip
+          retention-days: 60
+
+  # ── 4. Release en tag v* ──────────────────────────────────────────────────
+  release:
+    name: Publicar Release
+    runs-on: ubuntu-22.04
+    needs: [ build-linux, build-windows ]
+    if: startsWith(github.ref, 'refs/tags/v')
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Descargar artefacto Linux
+        uses: actions/download-artifact@v4
+        with:
+          name: mttocantv-linux-deb
+
+      - name: Descargar artefacto Windows
+        uses: actions/download-artifact@v4
+        with:
+          name: mttocantv-windows-portable
+
+      - name: Crear Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            mttocantv_1.0.0_all.deb
+            MttoCantv_Windows_Portable.zip
+          body: |
+            ## MttoCantv ${{ github.ref_name }}
+            **Gerencia General de Energía & Climatización Guárico**
+
+            ---
+
+            ### 🐧 Linux Lite / Ubuntu / Debian
+            ```bash
+            sudo dpkg -i mttocantv_1.0.0_all.deb
+            sudo apt-get install -f
+            ```
+
+            ### 🪟 Windows 7 / 10 / 11 (Portable)
+            1. Descargar `MttoCantv_Windows_Portable.zip`
+            2. Descomprimir en cualquier carpeta (pendrive, escritorio, etc.)
+            3. Doble clic en `MttoCantv.exe`
+            4. **No requiere instalación**
+
+            ### 🔄 Compartir base de datos entre PC
+            - Guardar BD desde el menú de la app → archivo `.db`
+            - Copiar al otro equipo (pendrive / Drive / Telegram)
+            - Cargar BD en el otro equipo
+
+            ### 🖼 Agregar banner e ícono
+            **Linux:** `sudo cp banner.png /usr/share/mttocantv/`
+            **Windows:** copiar `banner.png` e `icon.png` junto al `.exe`
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
