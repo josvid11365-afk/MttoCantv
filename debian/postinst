@@ -1,0 +1,22 @@
+#!/bin/bash
+set -e
+
+if command -v update-desktop-database &>/dev/null; then
+    update-desktop-database /usr/share/applications/ || true
+fi
+if command -v gtk-update-icon-cache &>/dev/null; then
+    gtk-update-icon-cache /usr/share/icons/hicolor/ || true
+fi
+
+echo ""
+echo "╔══════════════════════════════════════════════════════════╗"
+echo "║   MttoCantv v1.0 instalado correctamente                 ║"
+echo "║   Gerencia General de Energía & Climatización Guárico    ║"
+echo "║                                                          ║"
+echo "║   Coloca tus imágenes en:                                ║"
+echo "║   /usr/share/mttocantv/banner.png   (banner)             ║"
+echo "║   /usr/share/mttocantv/icon.png     (ícono)              ║"
+echo "║                                                          ║"
+echo "║   Ejecuta con: mttocantv                                 ║"
+echo "╚══════════════════════════════════════════════════════════╝"
+echo ""

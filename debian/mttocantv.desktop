@@ -1,0 +1,12 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=MttoCantv
+GenericName=Registro de Mantenimiento
+Comment=Gerencia General de Energía & Climatización Guárico
+Exec=mttocantv
+Icon=mttocantv
+Terminal=false
+Categories=Utility;Office;
+Keywords=mantenimiento;cantv;preventivo;correctivo;registro;energía;
+StartupNotify=true

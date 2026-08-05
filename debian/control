@@ -1,0 +1,12 @@
+Package: mttocantv
+Version: 1.0.0
+Section: utils
+Priority: optional
+Architecture: all
+Depends: python3 (>= 3.8), python3-tk, python3-pil, python3-pil.imagetk, python3-reportlab
+Maintainer: Gerencia Energía & Climatización Guárico <mttocantv@example.com>
+Description: MttoCantv – Registro de Mantenimiento
+ Aplicación de escritorio para la Gerencia General de Energía y
+ Climatización Guárico. Registro de intervenciones preventivas,
+ correctivas, predictivas y fuera de servicio. Incluye autocompletar
+ en campos repetitivos, exportación PDF y respaldo SQLite.
