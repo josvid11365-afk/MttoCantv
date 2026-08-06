@@ -9,7 +9,7 @@ on:
 
 jobs:
 
-  # ── 1. Verificar sintaxis ─────────────────────────────────────────────────
+  # ── 1. Verificar sintaxis ──────────────────────────────────────────────────
   lint:
     name: Verificar código Python
     runs-on: ubuntu-22.04
@@ -117,22 +117,21 @@ jobs:
   # ── 3. Construir .exe portable para Windows ───────────────────────────────
   build-windows:
     name: Construir .exe portable (Windows 7+)
-    runs-on: windows-2019
+    runs-on: windows-latest
     needs: lint
 
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up Python 3.8
-        # Python 3.8 es la última versión compatible con Windows 7
+      - name: Set up Python 3.11
         uses: actions/setup-python@v5
         with:
-          python-version: "3.8"
+          python-version: "3.11"
 
       - name: Instalar dependencias Python
         run: |
           python -m pip install --upgrade pip
-          pip install pyinstaller==6.3.0
+          pip install pyinstaller
           pip install pillow
           pip install reportlab
 
