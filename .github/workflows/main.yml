@@ -15,12 +15,10 @@ jobs:
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
-
       - name: Set up Python 3.11
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-
       - name: Verificar sintaxis
         run: |
           python3 -m py_compile mttocantv/app.py
@@ -31,52 +29,36 @@ jobs:
     name: Construir .deb (Linux Lite)
     runs-on: ubuntu-22.04
     needs: lint
-
     steps:
       - uses: actions/checkout@v4
-
       - name: Instalar herramientas
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y \
-            dpkg-dev \
-            python3-tk \
-            python3-pil \
-            python3-pil.imagetk \
-            python3-reportlab
-
+          sudo apt-get install -y dpkg-dev python3-tk python3-pil python3-pil.imagetk python3-reportlab
       - name: Construir paquete .deb
         run: |
           set -e
           PKG="mttocantv_1.0.0_all"
-
-          mkdir -p ${PKG}/DEBIAN
-          mkdir -p ${PKG}/usr/bin
+          mkdir -p ${PKG}/DEBIAN ${PKG}/usr/bin
           mkdir -p ${PKG}/usr/lib/python3/dist-packages/mttocantv
           mkdir -p ${PKG}/usr/share/applications
           mkdir -p ${PKG}/usr/share/icons/hicolor/scalable/apps
           mkdir -p ${PKG}/usr/share/icons/hicolor/256x256/apps
-          mkdir -p ${PKG}/usr/share/mttocantv
-          mkdir -p ${PKG}/usr/share/doc/mttocantv
+          mkdir -p ${PKG}/usr/share/mttocantv ${PKG}/usr/share/doc/mttocantv
 
-          cp mttocantv/app.py       ${PKG}/usr/lib/python3/dist-packages/mttocantv/
-          cp mttocantv/__init__.py  ${PKG}/usr/lib/python3/dist-packages/mttocantv/
+          cp mttocantv/app.py      ${PKG}/usr/lib/python3/dist-packages/mttocantv/
+          cp mttocantv/__init__.py ${PKG}/usr/lib/python3/dist-packages/mttocantv/
 
-          if [ -f assets/banner.png ]; then
-            cp assets/banner.png ${PKG}/usr/share/mttocantv/banner.png
-          fi
+          if [ -f assets/banner.png ]; then cp assets/banner.png ${PKG}/usr/share/mttocantv/banner.png; fi
           if [ -f assets/icon.png ]; then
-            cp assets/icon.png   ${PKG}/usr/share/mttocantv/icon.png
-            cp assets/icon.png   ${PKG}/usr/share/icons/hicolor/256x256/apps/mttocantv.png
+            cp assets/icon.png ${PKG}/usr/share/mttocantv/icon.png
+            cp assets/icon.png ${PKG}/usr/share/icons/hicolor/256x256/apps/mttocantv.png
           fi
 
           cat > ${PKG}/usr/bin/mttocantv <<'SCRIPT'
           #!/usr/bin/env python3
-          # -*- coding: utf-8 -*-
-          import sys
-          sys.path.insert(0, '/usr/lib/python3/dist-packages')
-          from mttocantv.app import main
-          main()
+          import sys; sys.path.insert(0,'/usr/lib/python3/dist-packages')
+          from mttocantv.app import main; main()
           SCRIPT
           chmod +x ${PKG}/usr/bin/mttocantv
 
@@ -92,11 +74,9 @@ jobs:
           cp debian/postinst          ${PKG}/DEBIAN/postinst
           chmod 755                   ${PKG}/DEBIAN/postinst
           cp debian/mttocantv.desktop ${PKG}/usr/share/applications/
-
-          echo "MttoCantv v1.0 – MIT" > ${PKG}/usr/share/doc/mttocantv/copyright
+          echo "MttoCantv v1.0" > ${PKG}/usr/share/doc/mttocantv/copyright
 
           dpkg-deb --build --root-owner-group ${PKG}
-          echo "✅ .deb generado:"
           ls -lh ${PKG}.deb
 
       - name: Verificar .deb
@@ -109,44 +89,66 @@ jobs:
           path: mttocantv_1.0.0_all.deb
           retention-days: 60
 
-  # ── 3. Construir .exe portable para Windows ───────────────────────────────
+  # ── 3. Construir .exe 32 bits para Windows 7/10/11 ────────────────────────
   build-windows:
-    name: Construir .exe portable (Windows 7+)
+    name: Construir .exe 32 bits (Windows 7+)
     runs-on: windows-latest
     needs: lint
-
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up Python 3.11
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
-      - name: Instalar dependencias Python
+      - name: Instalar Python 3.8 32 bits
         shell: pwsh
         run: |
-          python -m pip install --upgrade pip
-          pip install pyinstaller
-          pip install pillow
-          pip install reportlab
+          # Descargar instalador oficial de Python 3.8 32 bits
+          $url = "https://www.python.org/ftp/python/3.8.20/python-3.8.20.exe"
+          $out = "$env:TEMP\python38_x86.exe"
+          Write-Host "Descargando Python 3.8 x86..."
+          Invoke-WebRequest -Uri $url -OutFile $out
+          # Instalar silenciosamente en carpeta local
+          Start-Process -FilePath $out -ArgumentList `
+            "/quiet InstallAllUsers=0 TargetDir=C:\Python38x86 Include_pip=1 Include_launcher=0" `
+            -Wait
+          Write-Host "✅ Python 3.8 x86 instalado"
+          C:\Python38x86\python.exe --version
 
-      - name: Construir .exe con PyInstaller
+      - name: Instalar dependencias 32 bits
         shell: pwsh
         run: |
-          pyinstaller `
-            --onefile `
-            --windowed `
-            --name MttoCantv `
-            --hidden-import tkinter `
-            --hidden-import tkinter.ttk `
-            --hidden-import sqlite3 `
-            --hidden-import PIL `
-            --hidden-import reportlab `
-            mttocantv/app.py
+          C:\Python38x86\python.exe -m pip install --upgrade pip
+          C:\Python38x86\python.exe -m pip install pyinstaller pillow reportlab
+          Write-Host "✅ Dependencias instaladas"
+
+      - name: Construir .exe 32 bits con PyInstaller
+        shell: pwsh
+        run: |
+          $addData = ""
+          if (Test-Path assets) { $addData = "--add-data `"assets;assets`"" }
+
+          $args = @(
+            "--onefile", "--windowed",
+            "--name", "MttoCantv",
+            "--hidden-import", "tkinter",
+            "--hidden-import", "tkinter.ttk",
+            "--hidden-import", "sqlite3",
+            "--hidden-import", "PIL",
+            "--hidden-import", "reportlab"
+          )
+          if ($addData) { $args += $addData }
+          $args += "mttocantv/app.py"
+
+          & C:\Python38x86\Scripts\pyinstaller.exe @args
 
           Write-Host "✅ .exe generado:"
           Get-Item dist\MttoCantv.exe
+          # Verificar que es 32 bits
+          $bytes = [System.IO.File]::ReadAllBytes("dist\MttoCantv.exe")
+          $machine = [System.BitConverter]::ToUInt16($bytes, 0x100)
+          if ($machine -eq 0x14c) {
+            Write-Host "✅ Confirmado: ejecutable de 32 bits (x86)"
+          } else {
+            Write-Host "ℹ️  Machine type: 0x$($machine.ToString('X'))"
+          }
 
       - name: Crear carpeta portable
         shell: pwsh
@@ -154,35 +156,38 @@ jobs:
           New-Item -ItemType Directory -Path MttoCantv_Portable | Out-Null
           Copy-Item dist\MttoCantv.exe MttoCantv_Portable\MttoCantv.exe
 
+          # Assets junto al .exe para que find_asset los encuentre
           if (Test-Path assets\banner.png) { Copy-Item assets\banner.png MttoCantv_Portable\banner.png }
           if (Test-Path assets\icon.png)   { Copy-Item assets\icon.png   MttoCantv_Portable\icon.png   }
 
-          $readme = "MttoCantv - Registro de Mantenimiento`r`n"
+          $readme  = "MttoCantv - Registro de Mantenimiento`r`n"
           $readme += "Gerencia General de Energia y Climatizacion Guarico`r`n`r`n"
+          $readme += "COMPATIBLE CON: Windows 7, 8, 10 y 11 (32 y 64 bits)`r`n`r`n"
           $readme += "USO:`r`n"
           $readme += "  1. Doble clic en MttoCantv.exe`r`n"
           $readme += "  2. No requiere instalacion`r`n`r`n"
           $readme += "IMAGENES:`r`n"
-          $readme += "  Coloca banner.png e icon.png en esta misma carpeta`r`n`r`n"
+          $readme += "  banner.png e icon.png deben estar en esta misma carpeta`r`n`r`n"
           $readme += "BASE DE DATOS:`r`n"
-          $readme += "  Se guarda en: $env:APPDATA\mttocantv\registros.db`r`n"
+          $readme += "  Windows 7: C:\Users\USUARIO\AppData\Roaming\mttocantv\registros.db`r`n"
           $readme += "  Usa Guardar BD / Cargar BD para mover datos entre equipos`r`n"
-          $readme | Out-File -FilePath MttoCantv_Portable\LEEME.txt -Encoding utf8
+          $readme | Out-File MttoCantv_Portable\LEEME.txt -Encoding utf8
 
           Get-ChildItem MttoCantv_Portable
           Write-Host "✅ Carpeta portable lista"
 
-      - name: Comprimir carpeta portable
+      - name: Comprimir
         shell: pwsh
         run: |
-          Compress-Archive -Path MttoCantv_Portable -DestinationPath MttoCantv_Windows_Portable.zip -Force
-          Write-Host "✅ ZIP portable creado"
+          Compress-Archive -Path MttoCantv_Portable `
+            -DestinationPath MttoCantv_Windows_Portable_x86.zip -Force
+          Write-Host "✅ ZIP listo"
 
       - name: Subir artefacto Windows
         uses: actions/upload-artifact@v4
         with:
-          name: mttocantv-windows-portable
-          path: MttoCantv_Windows_Portable.zip
+          name: mttocantv-windows-x86
+          path: MttoCantv_Windows_Portable_x86.zip
           retention-days: 60
 
   # ── 4. Release en tag v* ──────────────────────────────────────────────────
@@ -191,7 +196,6 @@ jobs:
     runs-on: ubuntu-22.04
     needs: [ build-linux, build-windows ]
     if: startsWith(github.ref, 'refs/tags/v')
-
     steps:
       - uses: actions/checkout@v4
 
@@ -203,31 +207,31 @@ jobs:
       - name: Descargar artefacto Windows
         uses: actions/download-artifact@v4
         with:
-          name: mttocantv-windows-portable
+          name: mttocantv-windows-x86
 
       - name: Crear Release
         uses: softprops/action-gh-release@v2
         with:
           files: |
             mttocantv_1.0.0_all.deb
-            MttoCantv_Windows_Portable.zip
+            MttoCantv_Windows_Portable_x86.zip
           body: |
             ## MttoCantv ${{ github.ref_name }}
             **Gerencia General de Energía & Climatización Guárico**
 
-            ### Linux Lite / Ubuntu / Debian
+            ### 🐧 Linux Lite
             ```bash
             sudo dpkg -i mttocantv_1.0.0_all.deb
             sudo apt-get install -f
             ```
 
-            ### Windows 7 / 10 / 11 (Portable)
-            1. Descargar MttoCantv_Windows_Portable.zip
-            2. Descomprimir en cualquier carpeta
-            3. Doble clic en MttoCantv.exe — sin instalar nada
+            ### 🪟 Windows 7 / 10 / 11 — 32 y 64 bits (Portable)
+            1. Descargar `MttoCantv_Windows_Portable_x86.zip`
+            2. Descomprimir en cualquier carpeta o pendrive
+            3. Doble clic en `MttoCantv.exe` — sin instalar nada
 
-            ### Compartir BD entre equipos
-            Usar los botones Guardar BD / Cargar BD dentro de la app
+            ### 🔄 Compartir BD entre equipos
+            Botones **Guardar BD** / **Cargar BD** dentro de la app
           generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
