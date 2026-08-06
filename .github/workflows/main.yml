@@ -59,11 +59,9 @@ jobs:
           mkdir -p ${PKG}/usr/share/mttocantv
           mkdir -p ${PKG}/usr/share/doc/mttocantv
 
-          # Archivos Python
           cp mttocantv/app.py       ${PKG}/usr/lib/python3/dist-packages/mttocantv/
           cp mttocantv/__init__.py  ${PKG}/usr/lib/python3/dist-packages/mttocantv/
 
-          # Assets (banner e ícono si existen en el repo)
           if [ -f assets/banner.png ]; then
             cp assets/banner.png ${PKG}/usr/share/mttocantv/banner.png
           fi
@@ -72,7 +70,6 @@ jobs:
             cp assets/icon.png   ${PKG}/usr/share/icons/hicolor/256x256/apps/mttocantv.png
           fi
 
-          # Ejecutable
           cat > ${PKG}/usr/bin/mttocantv <<'SCRIPT'
           #!/usr/bin/env python3
           # -*- coding: utf-8 -*-
@@ -83,7 +80,6 @@ jobs:
           SCRIPT
           chmod +x ${PKG}/usr/bin/mttocantv
 
-          # Ícono SVG fallback
           cat > ${PKG}/usr/share/icons/hicolor/scalable/apps/mttocantv.svg <<'SVG'
           <?xml version="1.0" encoding="UTF-8"?>
           <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
@@ -92,7 +88,6 @@ jobs:
           </svg>
           SVG
 
-          # Metadatos Debian
           cp debian/control           ${PKG}/DEBIAN/control
           cp debian/postinst          ${PKG}/DEBIAN/postinst
           chmod 755                   ${PKG}/DEBIAN/postinst
@@ -129,6 +124,7 @@ jobs:
           python-version: "3.11"
 
       - name: Instalar dependencias Python
+        shell: pwsh
         run: |
           python -m pip install --upgrade pip
           pip install pyinstaller
@@ -136,12 +132,12 @@ jobs:
           pip install reportlab
 
       - name: Construir .exe con PyInstaller
+        shell: pwsh
         run: |
           pyinstaller `
             --onefile `
             --windowed `
             --name MttoCantv `
-            --add-data "assets;assets" `
             --hidden-import tkinter `
             --hidden-import tkinter.ttk `
             --hidden-import sqlite3 `
@@ -149,37 +145,38 @@ jobs:
             --hidden-import reportlab `
             mttocantv/app.py
 
-          echo "✅ .exe generado:"
-          dir dist\MttoCantv.exe
+          Write-Host "✅ .exe generado:"
+          Get-Item dist\MttoCantv.exe
 
       - name: Crear carpeta portable
+        shell: pwsh
         run: |
-          mkdir MttoCantv_Portable
-          copy dist\MttoCantv.exe MttoCantv_Portable\MttoCantv.exe
+          New-Item -ItemType Directory -Path MttoCantv_Portable | Out-Null
+          Copy-Item dist\MttoCantv.exe MttoCantv_Portable\MttoCantv.exe
 
-          # Copiar assets si existen
-          if exist assets\banner.png copy assets\banner.png MttoCantv_Portable\banner.png
-          if exist assets\icon.png   copy assets\icon.png   MttoCantv_Portable\icon.png
+          if (Test-Path assets\banner.png) { Copy-Item assets\banner.png MttoCantv_Portable\banner.png }
+          if (Test-Path assets\icon.png)   { Copy-Item assets\icon.png   MttoCantv_Portable\icon.png   }
 
-          # README de uso
-          echo MttoCantv - Registro de Mantenimiento > MttoCantv_Portable\LEEME.txt
-          echo. >> MttoCantv_Portable\LEEME.txt
-          echo USO: >> MttoCantv_Portable\LEEME.txt
-          echo   1. Doble clic en MttoCantv.exe >> MttoCantv_Portable\LEEME.txt
-          echo   2. No requiere instalacion >> MttoCantv_Portable\LEEME.txt
-          echo. >> MttoCantv_Portable\LEEME.txt
-          echo IMAGENES: >> MttoCantv_Portable\LEEME.txt
-          echo   Coloca banner.png e icon.png en esta misma carpeta >> MttoCantv_Portable\LEEME.txt
-          echo. >> MttoCantv_Portable\LEEME.txt
-          echo BASE DE DATOS: >> MttoCantv_Portable\LEEME.txt
-          echo   Se guarda en: %APPDATA%\mttocantv\registros.db >> MttoCantv_Portable\LEEME.txt
+          $readme = "MttoCantv - Registro de Mantenimiento`r`n"
+          $readme += "Gerencia General de Energia y Climatizacion Guarico`r`n`r`n"
+          $readme += "USO:`r`n"
+          $readme += "  1. Doble clic en MttoCantv.exe`r`n"
+          $readme += "  2. No requiere instalacion`r`n`r`n"
+          $readme += "IMAGENES:`r`n"
+          $readme += "  Coloca banner.png e icon.png en esta misma carpeta`r`n`r`n"
+          $readme += "BASE DE DATOS:`r`n"
+          $readme += "  Se guarda en: $env:APPDATA\mttocantv\registros.db`r`n"
+          $readme += "  Usa Guardar BD / Cargar BD para mover datos entre equipos`r`n"
+          $readme | Out-File -FilePath MttoCantv_Portable\LEEME.txt -Encoding utf8
 
-          dir MttoCantv_Portable
+          Get-ChildItem MttoCantv_Portable
+          Write-Host "✅ Carpeta portable lista"
 
       - name: Comprimir carpeta portable
+        shell: pwsh
         run: |
-          Compress-Archive -Path MttoCantv_Portable -DestinationPath MttoCantv_Windows_Portable.zip
-          echo "✅ ZIP portable creado"
+          Compress-Archive -Path MttoCantv_Portable -DestinationPath MttoCantv_Windows_Portable.zip -Force
+          Write-Host "✅ ZIP portable creado"
 
       - name: Subir artefacto Windows
         uses: actions/upload-artifact@v4
@@ -218,28 +215,19 @@ jobs:
             ## MttoCantv ${{ github.ref_name }}
             **Gerencia General de Energía & Climatización Guárico**
 
-            ---
-
-            ### 🐧 Linux Lite / Ubuntu / Debian
+            ### Linux Lite / Ubuntu / Debian
             ```bash
             sudo dpkg -i mttocantv_1.0.0_all.deb
             sudo apt-get install -f
             ```
 
-            ### 🪟 Windows 7 / 10 / 11 (Portable)
-            1. Descargar `MttoCantv_Windows_Portable.zip`
-            2. Descomprimir en cualquier carpeta (pendrive, escritorio, etc.)
-            3. Doble clic en `MttoCantv.exe`
-            4. **No requiere instalación**
+            ### Windows 7 / 10 / 11 (Portable)
+            1. Descargar MttoCantv_Windows_Portable.zip
+            2. Descomprimir en cualquier carpeta
+            3. Doble clic en MttoCantv.exe — sin instalar nada
 
-            ### 🔄 Compartir base de datos entre PC
-            - Guardar BD desde el menú de la app → archivo `.db`
-            - Copiar al otro equipo (pendrive / Drive / Telegram)
-            - Cargar BD en el otro equipo
-
-            ### 🖼 Agregar banner e ícono
-            **Linux:** `sudo cp banner.png /usr/share/mttocantv/`
-            **Windows:** copiar `banner.png` e `icon.png` junto al `.exe`
+            ### Compartir BD entre equipos
+            Usar los botones Guardar BD / Cargar BD dentro de la app
           generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
