@@ -11,6 +11,7 @@ import sqlite3
 import os
 import sys
 import shutil
+import calendar
 from datetime import datetime
 from pathlib import Path
 
@@ -34,7 +35,6 @@ except ImportError:
 
 # ── Rutas compatibles Windows / Linux ────────────────────────────────────────
 APP_NAME = "mttocantv"
-
 if sys.platform.startswith("win"):
     DATA_DIR = Path(os.environ.get("APPDATA", Path.home())) / APP_NAME
 else:
@@ -44,9 +44,15 @@ DB_PATH = DATA_DIR / "registros.db"
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 def find_asset(filename):
-    """Busca un asset junto al ejecutable o en rutas estándar."""
+    if getattr(sys, "frozen", False):
+        exe_dir = Path(sys.executable).parent
+    else:
+        exe_dir = Path(__file__).parent
     candidates = [
-        Path(getattr(sys, "_MEIPASS", "")) / filename,          # PyInstaller
+        exe_dir / filename,
+        exe_dir / "assets" / filename,
+        Path(getattr(sys, "_MEIPASS", "")) / filename,
+        Path(getattr(sys, "_MEIPASS", "")) / "assets" / filename,
         Path(__file__).parent / "assets" / filename,
         Path(__file__).parent.parent / "assets" / filename,
         DATA_DIR / filename,
@@ -54,8 +60,11 @@ def find_asset(filename):
     if not sys.platform.startswith("win"):
         candidates.append(Path("/usr/share/mttocantv") / filename)
     for p in candidates:
-        if p.exists():
-            return str(p)
+        try:
+            if p.exists():
+                return str(p)
+        except Exception:
+            pass
     return None
 
 # ── Paleta ────────────────────────────────────────────────────────────────────
@@ -82,7 +91,6 @@ C = {
 }
 
 TIPOS = ["Preventivo", "Correctivo", "Predictivo", "Fuera de Servicio"]
-
 TIPO_COLOR = {
     "Preventivo":        "#2E7D32",
     "Correctivo":        "#E65100",
@@ -100,18 +108,18 @@ def init_db():
     with get_conn() as c:
         c.execute("""
             CREATE TABLE IF NOT EXISTS registros (
-                id         INTEGER PRIMARY KEY AUTOINCREMENT,
-                fecha      TEXT NOT NULL,
-                hora       TEXT,
-                central    TEXT,
-                equipo     TEXT NOT NULL,
-                ticket     TEXT,
-                orden_srv  TEXT,
-                tipo       TEXT NOT NULL DEFAULT 'Preventivo',
-                tecnicos   TEXT,
-                actividad  TEXT NOT NULL,
-                notas      TEXT,
-                creado_en  TEXT DEFAULT (datetime('now','localtime'))
+                id        INTEGER PRIMARY KEY AUTOINCREMENT,
+                fecha     TEXT NOT NULL,
+                hora      TEXT,
+                central   TEXT,
+                equipo    TEXT NOT NULL,
+                ticket    TEXT,
+                orden_srv TEXT,
+                tipo      TEXT NOT NULL DEFAULT 'Preventivo',
+                tecnicos  TEXT,
+                actividad TEXT NOT NULL,
+                notas     TEXT,
+                creado_en TEXT DEFAULT (datetime('now','localtime'))
             )
         """)
         for col, defn in [("orden_srv","TEXT"),("tecnicos","TEXT"),("central","TEXT")]:
@@ -121,18 +129,18 @@ def init_db():
                 pass
         c.commit()
 
-def db_all(search="", tipo="Todos", sort="fecha DESC"):
+def db_all(search="", tipo="Todos"):
     q = "SELECT * FROM registros WHERE 1=1"
     p = []
     if search:
         s = f"%{search}%"
         q += (" AND (central LIKE ? OR equipo LIKE ? OR ticket LIKE ?"
               " OR orden_srv LIKE ? OR actividad LIKE ? OR tecnicos LIKE ?)")
-        p.extend([s, s, s, s, s, s])
+        p.extend([s,s,s,s,s,s])
     if tipo != "Todos":
         q += " AND tipo=?"
         p.append(tipo)
-    q += f" ORDER BY {sort}"
+    q += " ORDER BY fecha DESC, creado_en DESC"
     with get_conn() as c:
         return c.execute(q, p).fetchall()
 
@@ -147,9 +155,9 @@ def db_insert(d):
 def db_update(rid, d):
     with get_conn() as c:
         c.execute("""UPDATE registros SET
-            fecha=:fecha, hora=:hora, central=:central, equipo=:equipo,
-            ticket=:ticket, orden_srv=:orden_srv, tipo=:tipo,
-            tecnicos=:tecnicos, actividad=:actividad, notas=:notas
+            fecha=:fecha,hora=:hora,central=:central,equipo=:equipo,
+            ticket=:ticket,orden_srv=:orden_srv,tipo=:tipo,
+            tecnicos=:tecnicos,actividad=:actividad,notas=:notas
             WHERE id=:id""", {**d, "id": rid})
         c.commit()
 
@@ -172,7 +180,6 @@ def db_stats():
     return total, prev, corr, pred, fs
 
 def db_distinct(field):
-    """Devuelve valores únicos de un campo para autocompletar."""
     allowed = {"central", "equipo", "tecnicos"}
     if field not in allowed:
         return []
@@ -180,53 +187,35 @@ def db_distinct(field):
         rows = c.execute(
             f"SELECT DISTINCT {field} FROM registros "
             f"WHERE {field} IS NOT NULL AND {field} != '' "
-            f"ORDER BY {field} ASC"
-        ).fetchall()
+            f"ORDER BY {field} ASC").fetchall()
     return [r[0] for r in rows]
 
 # ── Widget Autocompletar ──────────────────────────────────────────────────────
 class AutoCompleteEntry(tk.Frame):
-    """Entry con lista desplegable de sugerencias desde la BD."""
-
     def __init__(self, parent, db_field, width=20, **kwargs):
         super().__init__(parent, bg=C["card"])
-        self.db_field   = db_field
-        self._popup     = None
-        self._listbox   = None
-        self._var        = tk.StringVar()
-
-        self._entry = ttk.Entry(self, textvariable=self._var, width=width, **kwargs)
+        self.db_field = db_field
+        self._popup   = None
+        self._listbox = None
+        self._var     = tk.StringVar()
+        self._entry   = ttk.Entry(self, textvariable=self._var, width=width)
         self._entry.pack(fill="x", expand=True)
-
         self._var.trace_add("write", self._on_type)
-        self._entry.bind("<Down>",    self._focus_list)
-        self._entry.bind("<Escape>",  lambda e: self._close_popup())
-        self._entry.bind("<FocusOut>",self._on_focus_out)
+        self._entry.bind("<Down>",     self._focus_list)
+        self._entry.bind("<Escape>",   lambda e: self._close_popup())
+        self._entry.bind("<FocusOut>", self._on_focus_out)
 
-    # API pública compatible con ttk.Entry
-    def get(self):
-        return self._var.get()
+    def get(self):              return self._var.get()
+    def delete(self, a, b=None): self._entry.delete(a, b)
+    def insert(self, idx, val): self._entry.insert(idx, val)
+    def focus_set(self):        self._entry.focus_set()
 
-    def delete(self, a, b=None):
-        self._entry.delete(a, b)
-
-    def insert(self, idx, val):
-        self._entry.insert(idx, val)
-
-    def focus_set(self):
-        self._entry.focus_set()
-
-    def configure(self, **kw):
-        self._entry.configure(**kw)
-
-    # Lógica autocompletar
     def _on_type(self, *_):
         text = self._var.get().strip().lower()
         if len(text) < 1:
             self._close_popup()
             return
-        suggestions = [v for v in db_distinct(self.db_field)
-                       if text in v.lower()]
+        suggestions = [v for v in db_distinct(self.db_field) if text in v.lower()]
         if suggestions:
             self._show_popup(suggestions)
         else:
@@ -234,38 +223,30 @@ class AutoCompleteEntry(tk.Frame):
 
     def _show_popup(self, suggestions):
         self._close_popup()
-
-        # Coordenadas absolutas del entry
         self._entry.update_idletasks()
         x = self._entry.winfo_rootx()
         y = self._entry.winfo_rooty() + self._entry.winfo_height()
         w = self._entry.winfo_width()
-
         self._popup = tk.Toplevel(self._entry)
         self._popup.wm_overrideredirect(True)
         self._popup.wm_geometry(f"{w}x{min(len(suggestions),6)*24+4}+{x}+{y}")
         self._popup.configure(bg=C["ac_border"])
-
         frame = tk.Frame(self._popup, bg=C["ac_bg"], bd=0)
         frame.pack(fill="both", expand=True, padx=1, pady=1)
-
         sb = tk.Scrollbar(frame, orient="vertical")
         sb.pack(side="right", fill="y")
-
         self._listbox = tk.Listbox(frame, yscrollcommand=sb.set,
                                    bg=C["ac_bg"], fg=C["text"],
                                    selectbackground=C["ac_sel"],
                                    selectforeground=C["text"],
-                                   font=("Helvetica", 9),
+                                   font=("Helvetica",9),
                                    relief="flat", bd=0,
                                    activestyle="none",
-                                   height=min(len(suggestions), 6))
+                                   height=min(len(suggestions),6))
         sb.config(command=self._listbox.yview)
         self._listbox.pack(side="left", fill="both", expand=True)
-
         for s in suggestions:
             self._listbox.insert("end", s)
-
         self._listbox.bind("<ButtonRelease-1>", self._pick)
         self._listbox.bind("<Return>",           self._pick)
         self._listbox.bind("<Escape>",           lambda e: self._close_popup())
@@ -280,23 +261,19 @@ class AutoCompleteEntry(tk.Frame):
         if self._listbox:
             sel = self._listbox.curselection()
             if sel:
-                val = self._listbox.get(sel[0])
-                self._var.set(val)
+                self._var.set(self._listbox.get(sel[0]))
                 self._entry.icursor("end")
         self._close_popup()
         self._entry.focus_set()
 
     def _close_popup(self):
         if self._popup:
-            try:
-                self._popup.destroy()
-            except Exception:
-                pass
+            try:    self._popup.destroy()
+            except Exception: pass
             self._popup   = None
             self._listbox = None
 
     def _on_focus_out(self, event):
-        # Delay para permitir clic en listbox
         self.after(150, self._check_close)
 
     def _on_list_focus_out(self, event):
@@ -319,79 +296,96 @@ class CalendarPicker(tk.Toplevel):
         self.resizable(False, False)
         self.configure(bg=C["card"])
         self.grab_set()
-        now = initial or datetime.today()
-        self.year  = tk.IntVar(value=now.year)
-        self.month = tk.IntVar(value=now.month)
+        self.lift()
+        self.focus_force()
+        now = initial if initial else datetime.today()
+        self._year  = now.year
+        self._month = now.month
         self._build()
 
     def _build(self):
         for w in self.winfo_children():
             w.destroy()
+
         MESES = ["Enero","Febrero","Marzo","Abril","Mayo","Junio",
                  "Julio","Agosto","Septiembre","Octubre","Noviembre","Diciembre"]
-        y, m = self.year.get(), self.month.get()
 
+        # Navegación
         nav = tk.Frame(self, bg=C["header"])
         nav.pack(fill="x")
         tk.Button(nav, text="◀", bg=C["header"], fg="white", bd=0,
-                  font=("Helvetica",11,"bold"),
+                  font=("Helvetica",11,"bold"), activebackground=C["accent"],
                   command=self._prev).pack(side="left", padx=8, pady=6)
-        tk.Label(nav, text=f"{MESES[m-1]} {y}", bg=C["header"], fg="white",
+        tk.Label(nav, text=f"{MESES[self._month-1]} {self._year}",
+                 bg=C["header"], fg="white",
                  font=("Helvetica",11,"bold")).pack(side="left", expand=True)
         tk.Button(nav, text="▶", bg=C["header"], fg="white", bd=0,
-                  font=("Helvetica",11,"bold"),
+                  font=("Helvetica",11,"bold"), activebackground=C["accent"],
                   command=self._next).pack(side="right", padx=8, pady=6)
 
-        df = tk.Frame(self, bg=C["card"])
-        df.pack(padx=8, pady=(6,0))
+        # Días de la semana
+        df = tk.Frame(self, bg=C["card"], pady=4)
+        df.pack(padx=10)
         for i, d in enumerate(["Lu","Ma","Mi","Ju","Vi","Sa","Do"]):
-            tk.Label(df, text=d, width=3, bg=C["card"],
-                     fg=C["text_light"], font=("Helvetica",9,"bold")).grid(row=0,column=i)
+            tk.Label(df, text=d, width=4, bg=C["card"],
+                     fg=C["text_light"],
+                     font=("Helvetica",9,"bold")).grid(row=0, column=i, padx=1)
 
-        import calendar
-        first_wd     = calendar.monthrange(y, m)[0]
-        days_in_month= calendar.monthrange(y, m)[1]
+        # Días del mes
+        first_wd      = calendar.monthrange(self._year, self._month)[0]
+        days_in_month = calendar.monthrange(self._year, self._month)[1]
+        today         = datetime.today()
+
         cf = tk.Frame(self, bg=C["card"])
-        cf.pack(padx=8, pady=4)
+        cf.pack(padx=10, pady=(0,4))
+
         day = 1
         for week in range(6):
             for wd in range(7):
-                if week*7+wd >= first_wd and day <= days_in_month:
-                    is_today = (datetime.today().day==day and
-                                datetime.today().month==m and
-                                datetime.today().year==y)
+                if week * 7 + wd >= first_wd and day <= days_in_month:
+                    is_today = (today.day == day and
+                                today.month == self._month and
+                                today.year  == self._year)
                     bg = C["header"] if is_today else C["card"]
                     fg = "white"     if is_today else C["text"]
-                    tk.Button(cf, text=str(day), width=3, bg=bg, fg=fg,
-                              relief="flat", bd=0, font=("Helvetica",10),
+                    tk.Button(cf, text=str(day), width=4,
+                              bg=bg, fg=fg, relief="flat", bd=0,
+                              font=("Helvetica",10),
+                              activebackground=C["ac_sel"],
                               command=lambda d=day: self._pick(d)
                               ).grid(row=week, column=wd, padx=1, pady=1, ipady=3)
                     day += 1
                 else:
-                    tk.Label(cf, text="", width=3,
+                    tk.Label(cf, text="", width=4,
                              bg=C["card"]).grid(row=week, column=wd)
             if day > days_in_month:
                 break
 
-        tk.Button(self, text="Hoy", bg=C["accent"], fg="white", bd=0,
+        # Botón Hoy
+        tk.Button(self, text="  Hoy  ", bg=C["accent"], fg="white", bd=0,
                   font=("Helvetica",9,"bold"),
+                  activebackground=C["accent2"],
                   command=lambda: self._pick_date(datetime.today())
-                  ).pack(pady=(0,8))
+                  ).pack(pady=(0,10))
 
     def _prev(self):
-        m, y = self.month.get(), self.year.get()
-        self.month.set(12 if m==1 else m-1)
-        if m==1: self.year.set(y-1)
+        if self._month == 1:
+            self._month = 12
+            self._year -= 1
+        else:
+            self._month -= 1
         self._build()
 
     def _next(self):
-        m, y = self.month.get(), self.year.get()
-        self.month.set(1 if m==12 else m+1)
-        if m==12: self.year.set(y+1)
+        if self._month == 12:
+            self._month = 1
+            self._year += 1
+        else:
+            self._month += 1
         self._build()
 
     def _pick(self, day):
-        self._pick_date(datetime(self.year.get(), self.month.get(), day))
+        self._pick_date(datetime(self._year, self._month, day))
 
     def _pick_date(self, d):
         self.callback(d)
@@ -402,11 +396,10 @@ class MttoCantvApp(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("MttoCantv – Registro de Mantenimiento")
-        self.geometry("1180x800")
-        self.minsize(950, 620)
+        self.geometry("1180x820")
+        self.minsize(960, 640)
         self.configure(bg=C["bg"])
 
-        # Ícono
         icon_path = find_asset("icon.png")
         if icon_path and PIL_OK:
             try:
@@ -419,7 +412,7 @@ class MttoCantvApp(tk.Tk):
         init_db()
         self._styles()
         self._build_header()
-        self._build_toolbar()
+        self._build_search_bar()
         self._build_form()
         self._build_table()
         self._refresh()
@@ -447,39 +440,40 @@ class MttoCantvApp(tk.Tk):
             background=[("selected", C["sel_bg"])],
             foreground=[("selected", C["sel_fg"])])
 
-    # ── Cabecera ──────────────────────────────────────────────────────────────
+    # ── Cabecera: banner centrado + título debajo ─────────────────────────────
     def _build_header(self):
-        hdr = tk.Frame(self, bg=C["header"], height=90)
+        hdr = tk.Frame(self, bg=C["header"])
         hdr.pack(fill="x")
-        hdr.pack_propagate(False)
 
+        # Banner centrado
         banner_path = find_asset("banner.png")
         if banner_path and PIL_OK:
             try:
                 img = PILImage.open(banner_path)
                 ratio = 80 / img.height
-                img = img.resize((int(img.width*ratio), 80), PILImage.LANCZOS)
+                img = img.resize((int(img.width * ratio), 80), PILImage.LANCZOS)
                 self._banner_img = ImageTk.PhotoImage(img)
                 tk.Label(hdr, image=self._banner_img,
-                         bg=C["header"]).pack(side="left", padx=16, pady=5)
+                         bg=C["header"]).pack(pady=(8,2))
             except Exception:
                 tk.Label(hdr, text="⚙", bg=C["header"], fg="white",
-                         font=("Helvetica",40)).pack(side="left", padx=20)
+                         font=("Helvetica",32)).pack(pady=(8,2))
         else:
             tk.Label(hdr, text="⚙", bg=C["header"], fg="white",
-                     font=("Helvetica",40)).pack(side="left", padx=20)
+                     font=("Helvetica",32)).pack(pady=(8,2))
 
-        tf = tk.Frame(hdr, bg=C["header"])
-        tf.pack(side="left", padx=10)
-        tk.Label(tf, text="GERENCIA GENERAL DE ENERGÍA & CLIMATIZACIÓN GUÁRICO",
+        # Título debajo del banner, centrado
+        tk.Label(hdr,
+                 text="GERENCIA GENERAL DE ENERGÍA & CLIMATIZACIÓN GUÁRICO",
                  bg=C["header"], fg="white",
-                 font=("Helvetica",13,"bold")).pack(anchor="w")
-        tk.Label(tf, text="MttoCantv – Sistema de Registro de Mantenimiento",
+                 font=("Helvetica",13,"bold")).pack()
+        tk.Label(hdr,
+                 text="MttoCantv – Sistema de Registro de Mantenimiento",
                  bg=C["header"], fg="#90CAF9",
-                 font=("Helvetica",9)).pack(anchor="w")
+                 font=("Helvetica",9)).pack(pady=(0,8))
 
-    # ── Barra herramientas ────────────────────────────────────────────────────
-    def _build_toolbar(self):
+    # ── Barra de búsqueda y filtros ───────────────────────────────────────────
+    def _build_search_bar(self):
         bar = tk.Frame(self, bg=C["card"])
         bar.pack(fill="x")
         tk.Frame(bar, bg=C["border"], height=1).pack(fill="x")
@@ -491,24 +485,15 @@ class MttoCantvApp(tk.Tk):
         self._search_var = tk.StringVar()
         self._search_var.trace_add("write", lambda *_: self._refresh())
         ttk.Entry(inner, textvariable=self._search_var,
-                  width=30).pack(side="left", padx=(2,8), ipady=3)
+                  width=32).pack(side="left", padx=(2,12), ipady=3)
 
         tk.Label(inner, text="Tipo:", bg=C["card"], fg=C["text_light"],
                  font=("Helvetica",9)).pack(side="left")
         self._filter_tipo = tk.StringVar(value="Todos")
         cb = ttk.Combobox(inner, textvariable=self._filter_tipo,
-                          width=16, values=["Todos"]+TIPOS, state="readonly")
-        cb.pack(side="left", padx=(2,12))
+                          width=18, values=["Todos"]+TIPOS, state="readonly")
+        cb.pack(side="left", padx=(2,0))
         cb.bind("<<ComboboxSelected>>", lambda _: self._refresh())
-
-        def tbtn(text, color, cmd):
-            tk.Button(inner, text=text, bg=color, fg="white", bd=0,
-                      font=("Helvetica",9,"bold"), padx=10, pady=5,
-                      cursor="hand2", command=cmd).pack(side="right", padx=3)
-
-        tbtn("📂 Cargar BD",    C["btn_teal"],  self._load_db)
-        tbtn("💾 Guardar BD",   C["btn_green"], self._save_db)
-        tbtn("📄 Exportar PDF", C["btn_red"],   self._export_pdf)
 
     # ── Formulario ────────────────────────────────────────────────────────────
     def _build_form(self):
@@ -517,6 +502,7 @@ class MttoCantvApp(tk.Tk):
         outer = tk.Frame(self, bg=C["card"])
         outer.pack(fill="x", padx=10, pady=(8,0))
 
+        # Título sección
         title_bar = tk.Frame(outer, bg=C["accent"])
         title_bar.pack(fill="x")
         tk.Label(title_bar, text="  Registrar Nueva Intervención",
@@ -526,112 +512,155 @@ class MttoCantvApp(tk.Tk):
                  bg=C["accent"], fg="#BBDEFB", font=("Helvetica",9))
         self._form_lbl.pack(side="left")
 
-        form = tk.Frame(outer, bg=C["card"], padx=12, pady=10)
+        form = tk.Frame(outer, bg=C["card"], padx=14, pady=10)
         form.pack(fill="x")
-        form.columnconfigure((0,1,2,3,4,5), weight=1)
 
-        def lbl(text, row, col, span=1):
-            tk.Label(form, text=text, bg=C["card"], fg=C["text_light"],
+        # Anchos uniformes por tipo de campo
+        W_HALF  = 28   # campos de media línea
+        W_FULL  = 58   # campos de línea completa
+        W_SHORT = 14   # campos cortos (fecha, hora)
+        W_MED   = 20   # campos medianos
+
+        def lbl(text, row, col, span=1, bg=C["card"]):
+            tk.Label(form, text=text, bg=bg, fg=C["text_light"],
                      font=("Helvetica",8,"bold")).grid(
                          row=row, column=col, columnspan=span,
-                         sticky="w", padx=(0,4), pady=(6,0))
+                         sticky="w", padx=(0,4), pady=(8,0))
 
-        def plain_entry(row, col, width=18, span=1):
+        def plain_entry(row, col, width=W_HALF, span=1):
             e = ttk.Entry(form, width=width)
             e.grid(row=row, column=col, columnspan=span,
                    sticky="ew", padx=(0,8), pady=(2,0))
             return e
 
-        def ac_entry(row, col, field, width=18, span=1):
-            """Entry con autocompletar."""
+        def ac_entry(row, col, field, width=W_HALF, span=1):
             w = AutoCompleteEntry(form, db_field=field, width=width)
             w.grid(row=row, column=col, columnspan=span,
                    sticky="ew", padx=(0,8), pady=(2,0))
             return w
 
-        # ── Fila etiquetas 0 ─────────────────────────────────────────────────
-        lbl("Fecha del Mantenimiento:", 0, 0)
-        lbl("Central:",                 0, 1)
-        lbl("Tipo de Mantenimiento:",   0, 2)
-        lbl("Equipo Intervenido:",       0, 3, span=2)
+        def text_area(row, col, span=1, height=5):
+            t = tk.Text(form, height=height,
+                        bg=C["entry_bg"], fg=C["text"],
+                        relief="flat", bd=1,
+                        font=("Helvetica",10),
+                        highlightbackground=C["border"],
+                        highlightthickness=1)
+            t.grid(row=row, column=col, columnspan=span,
+                   sticky="ew", padx=(0,8), pady=(2,0))
+            return t
 
-        # ── Fila controles 1 ─────────────────────────────────────────────────
-        # Fecha + calendario
-        ff = tk.Frame(form, bg=C["card"])
-        ff.grid(row=1, column=0, sticky="ew", padx=(0,8), pady=(2,0))
-        self._fecha_var = tk.StringVar(value=datetime.today().strftime("%d/%m/%Y"))
-        ttk.Entry(ff, textvariable=self._fecha_var, width=12).pack(side="left")
-        tk.Button(ff, text="📆", bg=C["card"], bd=0, font=("Helvetica",12),
-                  cursor="hand2",
-                  command=self._open_cal).pack(side="left", padx=(2,0))
+        form.columnconfigure(0, weight=1)
+        form.columnconfigure(1, weight=1)
+        form.columnconfigure(2, weight=1)
+        form.columnconfigure(3, weight=1)
 
-        # Central — autocompletar ✅
-        self._central_ac = ac_entry(1, 1, "central")
+        # ── Fila 0-1: Central ────────────────────────────────────────────────
+        lbl("Central:", 0, 0, span=4)
+        self._central_ac = ac_entry(1, 0, "central", width=W_FULL, span=4)
 
-        # Tipo
+        # ── Fila 2-3: Técnicos ───────────────────────────────────────────────
+        lbl("Técnicos Responsables (Nombre P00, ...):", 2, 0, span=4)
+        self._tecnicos_ac = ac_entry(3, 0, "tecnicos", width=W_FULL, span=4)
+
+        # ── Separador visual ─────────────────────────────────────────────────
+        tk.Frame(form, bg=C["border"], height=1).grid(
+            row=4, column=0, columnspan=4, sticky="ew", pady=(10,0))
+
+        # ── Fila 5-6: Tipo | Equipo ──────────────────────────────────────────
+        lbl("Tipo de Mantenimiento:", 5, 0, span=2)
+        lbl("Equipo Intervenido:",    5, 2, span=2)
+
         self._tipo_var = tk.StringVar(value="Preventivo")
         ttk.Combobox(form, textvariable=self._tipo_var,
-                     values=TIPOS, state="readonly", width=17
-                     ).grid(row=1, column=2, sticky="ew", padx=(0,8), pady=(2,0))
+                     values=TIPOS, state="readonly", width=W_HALF
+                     ).grid(row=6, column=0, columnspan=2,
+                            sticky="ew", padx=(0,8), pady=(2,0))
+        self._equipo_ac = ac_entry(6, 2, "equipo", width=W_HALF, span=2)
 
-        # Equipo — autocompletar ✅
-        self._equipo_ac = ac_entry(1, 3, "equipo", width=22, span=2)
+        # ── Separador visual ─────────────────────────────────────────────────
+        tk.Frame(form, bg=C["border"], height=1).grid(
+            row=7, column=0, columnspan=4, sticky="ew", pady=(10,0))
 
-        # ── Fila etiquetas 2 ─────────────────────────────────────────────────
-        lbl("N° Ticket:",         2, 0)
-        lbl("Orden de Servicio:", 2, 1)
-        lbl("Hora:",              2, 2)
-        lbl("Técnicos Responsables (Nombre P00, ...):", 2, 3, span=3)
+        # ── Fila 8-9: Fecha | Hora | Orden de Servicio | N° Ticket ──────────
+        lbl("Fecha:",             8, 0)
+        lbl("Hora:",              8, 1)
+        lbl("Orden de Servicio:", 8, 2)
+        lbl("N° Ticket:",         8, 3)
 
-        # ── Fila controles 3 ─────────────────────────────────────────────────
-        self._ticket_e = plain_entry(3, 0)
-        self._orden_e  = plain_entry(3, 1)
+        # Fecha con calendario
+        fecha_frame = tk.Frame(form, bg=C["card"])
+        fecha_frame.grid(row=9, column=0, sticky="ew", padx=(0,8), pady=(2,0))
+        self._fecha_var = tk.StringVar(value=datetime.today().strftime("%d/%m/%Y"))
+        ttk.Entry(fecha_frame, textvariable=self._fecha_var,
+                  width=W_SHORT).pack(side="left")
+        tk.Button(fecha_frame, text="📆", bg=C["card"], bd=0,
+                  font=("Helvetica",12), cursor="hand2",
+                  activebackground=C["bg"],
+                  command=self._open_cal).pack(side="left", padx=(2,0))
 
         # Hora 12h
-        hf = tk.Frame(form, bg=C["card"])
-        hf.grid(row=3, column=2, sticky="ew", padx=(0,8), pady=(2,0))
+        hora_frame = tk.Frame(form, bg=C["card"])
+        hora_frame.grid(row=9, column=1, sticky="ew", padx=(0,8), pady=(2,0))
         self._hora_var = tk.StringVar()
-        ttk.Entry(hf, textvariable=self._hora_var, width=8).pack(side="left")
+        ttk.Entry(hora_frame, textvariable=self._hora_var,
+                  width=W_SHORT).pack(side="left")
         self._ampm_var = tk.StringVar(value="AM")
-        ttk.Combobox(hf, textvariable=self._ampm_var,
+        ttk.Combobox(hora_frame, textvariable=self._ampm_var,
                      values=["AM","PM"], state="readonly",
-                     width=4).pack(side="left", padx=(2,0))
+                     width=5).pack(side="left", padx=(2,0))
 
-        # Técnicos — autocompletar ✅
-        self._tecnicos_ac = ac_entry(3, 3, "tecnicos", width=38, span=3)
+        self._orden_e  = plain_entry(9, 2, width=W_MED)
+        self._ticket_e = plain_entry(9, 3, width=W_MED)
 
-        # ── Actividad ─────────────────────────────────────────────────────────
-        lbl("Actividad Realizada:", 4, 0, span=6)
-        self._actividad_t = tk.Text(form, height=3, bg=C["entry_bg"], fg=C["text"],
-                                    relief="flat", bd=1, font=("Helvetica",10),
-                                    highlightbackground=C["border"],
-                                    highlightthickness=1)
-        self._actividad_t.grid(row=5, column=0, columnspan=6,
-                               sticky="ew", padx=(0,4), pady=(2,0))
+        # ── Separador visual ─────────────────────────────────────────────────
+        tk.Frame(form, bg=C["border"], height=1).grid(
+            row=10, column=0, columnspan=4, sticky="ew", pady=(10,0))
 
-        # ── Notas ─────────────────────────────────────────────────────────────
-        lbl("Notas Adicionales:", 6, 0, span=6)
-        self._notas_t = tk.Text(form, height=2, bg=C["entry_bg"], fg=C["text"],
-                                relief="flat", bd=1, font=("Helvetica",10),
-                                highlightbackground=C["border"],
-                                highlightthickness=1)
-        self._notas_t.grid(row=7, column=0, columnspan=6,
-                           sticky="ew", padx=(0,4), pady=(2,0))
+        # ── Fila 11-12: Actividad Realizada ──────────────────────────────────
+        lbl("Actividad Realizada:", 11, 0, span=4)
+        self._actividad_t = text_area(12, 0, span=4, height=5)
 
-        # ── Botones ───────────────────────────────────────────────────────────
-        br = tk.Frame(form, bg=C["card"])
-        br.grid(row=8, column=0, columnspan=6, sticky="e", pady=(10,2))
-        self._save_btn = tk.Button(br, text="💾 GUARDAR REGISTRO",
+        # ── Fila 13-14: Notas Adicionales ────────────────────────────────────
+        lbl("Notas Adicionales:", 13, 0, span=4)
+        self._notas_t = text_area(14, 0, span=4, height=5)
+
+        # ── Fila 15: TODOS LOS BOTONES AL MISMO NIVEL ────────────────────────
+        btn_row = tk.Frame(form, bg=C["card"])
+        btn_row.grid(row=15, column=0, columnspan=4,
+                     sticky="ew", pady=(12,2))
+
+        def btn(parent, text, color, cmd, side="left", padx=(0,6)):
+            tk.Button(parent, text=text, bg=color, fg="white", bd=0,
+                      font=("Helvetica",9,"bold"), padx=12, pady=6,
+                      cursor="hand2",
+                      activebackground=color,
+                      command=cmd).pack(side=side, padx=padx)
+
+        # Izquierda: acciones del registro
+        self._save_btn = tk.Button(btn_row,
+                                   text="💾  GUARDAR REGISTRO",
                                    bg=C["accent"], fg="white", bd=0,
-                                   font=("Helvetica",10,"bold"),
-                                   padx=14, pady=6, cursor="hand2",
+                                   font=("Helvetica",9,"bold"),
+                                   padx=12, pady=6, cursor="hand2",
                                    command=self._save)
         self._save_btn.pack(side="left", padx=(0,6))
-        tk.Button(br, text="🧹 LIMPIAR",
+
+        tk.Button(btn_row, text="🧹  LIMPIAR",
                   bg=C["text_light"], fg="white", bd=0,
-                  font=("Helvetica",10,"bold"),
-                  padx=14, pady=6, cursor="hand2",
-                  command=self._clear).pack(side="left")
+                  font=("Helvetica",9,"bold"), padx=12, pady=6,
+                  cursor="hand2", command=self._clear
+                  ).pack(side="left", padx=(0,0))
+
+        # Separador visual entre grupos
+        tk.Frame(btn_row, bg=C["border"], width=1
+                 ).pack(side="left", fill="y", padx=16)
+
+        # Derecha: gestión de datos
+        btn(btn_row, "📄  Exportar PDF",  C["btn_red"],   self._export_pdf)
+        btn(btn_row, "💾  Guardar BD",    C["btn_green"],  self._save_db)
+        btn(btn_row, "📂  Cargar BD",     C["btn_teal"],  self._load_db,
+            padx=(0,0))
 
     def _open_cal(self):
         try:
@@ -639,7 +668,8 @@ class MttoCantvApp(tk.Tk):
         except Exception:
             d = datetime.today()
         CalendarPicker(self,
-                       lambda date: self._fecha_var.set(date.strftime("%d/%m/%Y")), d)
+                       lambda date: self._fecha_var.set(date.strftime("%d/%m/%Y")),
+                       d)
 
     def _get_data(self):
         return {
@@ -658,8 +688,7 @@ class MttoCantvApp(tk.Tk):
     def _clear(self):
         self._edit_id = None
         self._form_lbl.config(text="")
-        self._save_btn.config(text="💾 GUARDAR REGISTRO",
-                              bg=C["accent"])
+        self._save_btn.config(text="💾  GUARDAR REGISTRO", bg=C["accent"])
         self._fecha_var.set(datetime.today().strftime("%d/%m/%Y"))
         self._hora_var.set(datetime.now().strftime("%I:%M"))
         self._ampm_var.set(datetime.now().strftime("%p"))
@@ -690,7 +719,7 @@ class MttoCantvApp(tk.Tk):
             return
         self._edit_id = rid
         self._form_lbl.config(text=f"  ← Editando registro #{rid}")
-        self._save_btn.config(text="✏ ACTUALIZAR REGISTRO", bg="#E65100")
+        self._save_btn.config(text="✏  ACTUALIZAR REGISTRO", bg="#E65100")
 
         self._fecha_var.set(row["fecha"] or "")
         hp = (row["hora"] or "12:00 AM").rsplit(" ",1)
@@ -715,7 +744,7 @@ class MttoCantvApp(tk.Tk):
         self._actividad_t.insert("1.0", row["actividad"] or "")
         self._notas_t.delete("1.0","end")
         self._notas_t.insert("1.0", row["notas"] or "")
-        self._equipo_ac.focus_set()
+        self._central_ac.focus_set()
 
     # ── Tabla ─────────────────────────────────────────────────────────────────
     def _build_table(self):
@@ -735,7 +764,7 @@ class MttoCantvApp(tk.Tk):
                 "ticket","orden","tecnicos","actividad","notas")
         hdrs = ("Fecha","Hora","Central","Equipo","Tipo",
                 "Ticket","O.S.","Técnicos","Actividad","Notas")
-        wids = (90,70,110,120,100,80,80,140,220,120)
+        wids = (90,75,120,130,105,80,80,150,230,130)
 
         ft = tk.Frame(outer, bg=C["card"])
         ft.pack(fill="both", expand=True)
@@ -760,7 +789,6 @@ class MttoCantvApp(tk.Tk):
         for t, color in TIPO_COLOR.items():
             self._tree.tag_configure(t, foreground=color)
         self._tree.tag_configure("alt", background=C["row_alt"])
-
         self._tree.pack(fill="both", expand=True)
         self._tree.bind("<Double-1>", lambda e: self._edit_selected())
 
@@ -788,15 +816,13 @@ class MttoCantvApp(tk.Tk):
             if idx % 2: tags.append("alt")
             self._tree.insert("","end", iid=str(r["id"]),
                 values=(r["fecha"] or "", r["hora"] or "",
-                        r["central"] or "", r["equipo"],
-                        r["tipo"],
+                        r["central"] or "", r["equipo"], r["tipo"],
                         r["ticket"] or "", r["orden_srv"] or "",
                         r["tecnicos"] or "", r["actividad"],
                         r["notas"] or ""),
                 tags=tags)
         total = db_stats()[0]
-        self._count_lbl.config(
-            text=f"{len(rows)} de {total} registros  ")
+        self._count_lbl.config(text=f"{len(rows)} de {total} registros  ")
 
     def _sel_id(self):
         s = self._tree.selection()
@@ -828,7 +854,7 @@ class MttoCantvApp(tk.Tk):
             initialfile=f"mttocantv_{datetime.today().strftime('%Y%m%d')}.db")
         if dest:
             shutil.copy2(DB_PATH, dest)
-            messagebox.showinfo("MttoCantv",f"Base de datos guardada en:\n{dest}")
+            messagebox.showinfo("MttoCantv", f"Base de datos guardada en:\n{dest}")
 
     def _load_db(self):
         src = filedialog.askopenfilename(
@@ -840,8 +866,7 @@ class MttoCantvApp(tk.Tk):
                 shutil.copy2(src, DB_PATH)
                 init_db()
                 self._refresh()
-                messagebox.showinfo("MttoCantv",
-                    "Base de datos cargada correctamente.")
+                messagebox.showinfo("MttoCantv","Base de datos cargada correctamente.")
 
     # ── Exportar PDF ──────────────────────────────────────────────────────────
     def _export_pdf(self):
@@ -865,7 +890,7 @@ class MttoCantvApp(tk.Tk):
         if not dest:
             return
         self._generate_pdf(row, dest)
-        messagebox.showinfo("MttoCantv",f"Reporte exportado:\n{dest}")
+        messagebox.showinfo("MttoCantv", f"Reporte exportado:\n{dest}")
         try:
             import subprocess
             if sys.platform.startswith("win"):
@@ -892,7 +917,6 @@ class MttoCantvApp(tk.Tk):
         body_sty    = sty("B",  fontSize=10, leading=14, alignment=TA_JUSTIFY)
         bullet_sty  = sty("BU", fontSize=10, leading=14, leftIndent=20)
 
-        # Banner
         banner_path = find_asset("banner.png")
         if banner_path and PIL_OK:
             try:
@@ -901,7 +925,6 @@ class MttoCantvApp(tk.Tk):
             except Exception:
                 pass
 
-        # Encabezado institucional
         for line in [
             "GERENCIA GENERAL DE ENERGÍA Y CLIMATIZACIÓN",
             "GERENCIA DE O&M",
@@ -916,18 +939,15 @@ class MttoCantvApp(tk.Tk):
             sty("IT", fontSize=11, fontName="Helvetica-Bold",
                 spaceBefore=6, spaceAfter=8)))
 
-        # 1. Datos generales
         story.append(Paragraph("1. DATOS GENERALES", section_sty))
         story.append(Paragraph(f"• Ubicación: {row['central'] or '—'}", bullet_sty))
         story.append(Paragraph(f"• Fecha de Ejecución: {row['fecha']}", bullet_sty))
         story.append(Paragraph(f"• Hora: {row['hora'] or '—'}", bullet_sty))
         story.append(Paragraph(f"• Personal Técnico: {row['tecnicos'] or '—'}", bullet_sty))
 
-        # 2. Equipo
         story.append(Paragraph("2. EQUIPO INTERVENIDO", section_sty))
         story.append(Paragraph(f"• Equipo: {row['equipo']}", bullet_sty))
 
-        # 3. Actividades
         story.append(Paragraph("3. ACTIVIDADES REALIZADAS", section_sty))
         story.append(Paragraph(
             (row["actividad"] or "").replace("\n","<br/>"), body_sty))
